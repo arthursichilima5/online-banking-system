@@ -1,0 +1,367 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#define DATA_FILE "accounts.dat"
+#define NAME_LEN 50
+#define PIN_LEN 8
+
+typedef struct {
+    long account_no;
+    char name[NAME_LEN];
+    char pin[PIN_LEN]; // simple PIN, store as text (for learning only)
+    double balance;
+    int active; // 1 = active, 0 = closed
+} Account;
+
+/* Utility */
+void clear_stdin() {
+    int c;
+    while ((c = getchar()) != '\n' && c != EOF) {}
+}
+
+void read_string(char *buf, int len) {
+    if (fgets(buf, len, stdin) != NULL) {
+        size_t ln = strlen(buf) - 1;
+        if (buf[ln] == '\n') buf[ln] = '\0';
+    } else {
+        buf[0] = '\0';
+    }
+}
+
+/* File operations */
+long get_next_account_no() {
+    FILE *fp = fopen(DATA_FILE, "rb");
+    if (!fp) return 100000001; // start account numbers from 100,000,001
+
+    Account a;
+    long max = 100000000;
+    while (fread(&a, sizeof(Account), 1, fp) == 1) {
+        if (a.account_no > max) max = a.account_no;
+    }
+    fclose(fp);
+    return max + 1;
+}
+
+int save_account(Account *a) {
+    FILE *fp = fopen(DATA_FILE, "ab");
+    if (!fp) {
+        perror("Unable to open data file for writing");
+        return 0;
+    }
+    if (fwrite(a, sizeof(Account), 1, fp) != 1) {
+        perror("Write failed");
+        fclose(fp);
+        return 0;
+    }
+    fclose(fp);
+    return 1;
+}
+
+int update_account_in_file(Account *a) {
+    FILE *fp = fopen(DATA_FILE, "r+b");
+    if (!fp) {
+        perror("Unable to open data file for update");
+        return 0;
+    }
+    Account temp;
+    while (fread(&temp, sizeof(Account), 1, fp) == 1) {
+        if (temp.account_no == a->account_no) {
+            fseek(fp, -((long)sizeof(Account)), SEEK_CUR);
+            if (fwrite(a, sizeof(Account), 1, fp) != 1) {
+                perror("Failed to write update");
+                fclose(fp);
+                return 0;
+            }
+            fclose(fp);
+            return 1;
+        }
+    }
+    fclose(fp);
+    return 0;
+}
+
+int find_account_by_number(long acc_no, Account *out) {
+    FILE *fp = fopen(DATA_FILE, "rb");
+    if (!fp) return 0;
+    Account a;
+    while (fread(&a, sizeof(Account), 1, fp) == 1) {
+        if (a.account_no == acc_no && a.active) {
+            if (out) *out = a;
+            fclose(fp);
+            return 1;
+        }
+    }
+    fclose(fp);
+    return 0;
+}
+
+/* Core features */
+void create_account() {
+    Account a;
+    a.account_no = get_next_account_no();
+    printf("Creating new account. Account number will be: %ld\n", a.account_no);
+    printf("Enter account holder name: ");
+    read_string(a.name, NAME_LEN);
+
+    while (1) {
+        char pin1[PIN_LEN], pin2[PIN_LEN];
+        printf("Set a 4-digit PIN: ");
+        read_string(pin1, PIN_LEN);
+        printf("Confirm PIN: ");
+        read_string(pin2, PIN_LEN);
+        if (strlen(pin1) < 4 || strlen(pin1) > 6) {
+            printf("PIN must be 4-6 digits. Try again.\n");
+            continue;
+        }
+        if (strcmp(pin1, pin2) != 0) {
+            printf("PINs do not match. Try again.\n");
+            continue;
+        }
+        strcpy(a.pin, pin1);
+        break;
+    }
+
+    a.balance = 0.0;
+    a.active = 1;
+    if (save_account(&a)) {
+        printf("Account created successfully! Account No: %ld\n", a.account_no);
+    } else {
+        printf("Failed to create account.\n");
+    }
+}
+
+int authenticate(long acc_no, char *pin, Account *out) {
+    Account a;
+    FILE *fp = fopen(DATA_FILE, "rb");
+    if (!fp) return 0;
+    while (fread(&a, sizeof(Account), 1, fp) == 1) {
+        if (a.account_no == acc_no && a.active) {
+            if (strcmp(a.pin, pin) == 0) {
+                if (out) *out = a;
+                fclose(fp);
+                return 1;
+            } else {
+                fclose(fp);
+                return 0;
+            }
+        }
+    }
+    fclose(fp);
+    return 0;
+}
+
+void show_account_summary(Account *a) {
+    printf("\n--- Account Summary ---\n");
+    printf("Account No : %ld\n", a->account_no);
+    printf("Name : %s\n", a->name);
+    printf("Balance : %.2f\n", a->balance);
+    printf("Status : %s\n", a->active ? "Active" : "Closed");
+    printf("------------------------\n");
+}
+
+void deposit(Account *a) {
+    printf("Amount to deposit: ");
+    double amt;
+    if (scanf("%lf", &amt) != 1) { clear_stdin(); printf("Invalid input.\n"); return; }
+    clear_stdin();
+    if (amt <= 0) { printf("Amount must be positive.\n"); return; }
+    a->balance += amt;
+    if (update_account_in_file(a)) {
+        printf("Deposit successful. New balance: %.2f\n", a->balance);
+    } else {
+        printf("Failed to update account file.\n");
+    }
+}
+
+void withdraw(Account *a) {
+    printf("Amount to withdraw: ");
+    double amt;
+    if (scanf("%lf", &amt) != 1) { clear_stdin(); printf("Invalid input.\n"); return; }
+    clear_stdin();
+    if (amt <= 0) { printf("Amount must be positive.\n"); return; }
+    if (amt > a->balance) { printf("Insufficient funds.\n"); return; }
+    a->balance -= amt;
+    if (update_account_in_file(a)) {
+        printf("Withdrawal successful. New balance: %.2f\n", a->balance);
+    } else {
+        printf("Failed to update account file.\n");
+    }
+}
+
+void transfer(Account *from) {
+    printf("Transfer to account number: ");
+    long to_acc;
+    if (scanf("%ld", &to_acc) != 1) { clear_stdin(); printf("Invalid input.\n"); return; }
+    clear_stdin();
+    if (to_acc == from->account_no) { printf("Cannot transfer to the same account.\n"); return; }
+
+    Account to;
+    if (!find_account_by_number(to_acc, &to)) {
+        printf("Destination account not found or closed.\n");
+        return;
+    }
+
+    printf("Amount to transfer: ");
+    double amt;
+    if (scanf("%lf", &amt) != 1) { clear_stdin(); printf("Invalid input.\n"); return; }
+    clear_stdin();
+
+    if (amt <= 0) { printf("Amount must be positive.\n"); return; }
+    if (amt > from->balance) { printf("Insufficient funds.\n"); return; }
+
+    // update both accounts
+    from->balance -= amt;
+    to.balance += amt;
+
+    if (!update_account_in_file(from)) {
+        printf("Failed to update source account.\n");
+        return;
+    }
+    if (!update_account_in_file(&to)) {
+        printf("Failed to update destination account. Attempting to rollback...\n");
+        // rollback attempt (best-effort)
+        from->balance += amt;
+        update_account_in_file(from);
+        return;
+    }
+    printf("Transfer successful. New balance: %.2f\n", from->balance);
+}
+
+void close_account(Account *a) {
+    if (a->balance != 0.0) {
+        printf("Account balance must be zero before closing. Current balance: %.2f\n", a->balance);
+        return;
+    }
+    a->active = 0;
+    if (update_account_in_file(a)) {
+        printf("Account closed successfully.\n");
+    } else {
+        printf("Failed to close account.\n");
+    }
+}
+
+void account_menu(Account a) {
+    Account current = a; // local copy we will modify
+    while (1) {
+        printf("\n--- Account Menu (%ld) ---\n", current.account_no);
+        printf("1. View details\n");
+        printf("2. Deposit\n");
+        printf("3. Withdraw\n");
+        printf("4. Transfer\n");
+        printf("5. Close account\n");
+        printf("6. Logout\n");
+        printf("Choose: ");
+        int choice;
+        if (scanf("%d", &choice) != 1) { clear_stdin(); printf("Invalid input\n"); continue; }
+        clear_stdin();
+        switch (choice) {
+            case 1:
+                // read latest from file before showing
+                if (find_account_by_number(current.account_no, &current)) show_account_summary(&current);
+                else { printf("Account not found.\n"); return; }
+                break;
+            case 2:
+                if (find_account_by_number(current.account_no, &current)) deposit(&current);
+                else { printf("Account not found.\n"); return; }
+                break;
+            case 3:
+                if (find_account_by_number(current.account_no, &current)) withdraw(&current);
+                else { printf("Account not found.\n"); return; }
+                break;
+            case 4:
+                if (find_account_by_number(current.account_no, &current)) transfer(&current);
+                else { printf("Account not found.\n"); return; }
+                break;
+            case 5:
+                if (find_account_by_number(current.account_no, &current)) close_account(&current);
+                else { printf("Account not found.\n"); return; }
+                break;
+            case 6:
+                printf("Logging out...\n");
+                return;
+            default:
+                printf("Invalid choice.\n");
+        }
+    }
+}
+
+void login() {
+    printf("Enter account number: ");
+    long acc_no;
+    if (scanf("%ld", &acc_no) != 1) { clear_stdin(); printf("Invalid input.\n"); return; }
+    clear_stdin();
+    char pin[PIN_LEN];
+    printf("Enter PIN: ");
+    read_string(pin, PIN_LEN);
+    Account a;
+    if (authenticate(acc_no, pin, &a)) {
+        printf("Login successful. Welcome, %s!\n", a.name);
+        account_menu(a);
+    } else {
+        printf("Invalid account number or PIN.\n");
+    }
+}
+
+/* Admin: list all accounts (for learning/testing) */
+void list_all_accounts() {
+    FILE *fp = fopen(DATA_FILE, "rb");
+    if (!fp) {
+        printf("No accounts yet.\n");
+        return;
+    }
+    Account a;
+    printf("\n--- All Accounts ---\n");
+    while (fread(&a, sizeof(Account), 1, fp) == 1) {
+        printf("Acc: %ld | Name: %s | Bal: %.2f | %s\n",
+               a.account_no, a.name, a.balance, a.active ? "Active" : "Closed");
+    }
+    printf("--------------------\n");
+    fclose(fp);
+}
+
+/* Main menu */
+int main_menu() {
+    printf("\n=== Simple Bank System ===\n");
+    printf("1. Create account\n");
+    printf("2. Login\n");
+    printf("3. List all accounts (admin/test)\n");
+    printf("4. Exit\n");
+    printf("Choose: ");
+    int ch;
+    if (scanf("%d", &ch) != 1) { clear_stdin(); return -1; }
+    clear_stdin();
+    return ch;
+}
+
+int main(void) {
+    // ensure data file exists (create if not)
+    FILE *fp = fopen(DATA_FILE, "ab");
+    if (fp) fclose(fp);
+
+    while (1) {
+        int choice = main_menu();
+        if (choice == -1) {
+            printf("Invalid input.\n");
+            continue;
+        }
+        switch (choice) {
+            case 1:
+                create_account();
+                break;
+            case 2:
+                login();
+                break;
+            case 3:
+                list_all_accounts();
+                break;
+            case 4:
+                printf("Goodbye.\n");
+                exit(0);
+            default:
+                printf("Invalid choice.\n");
+        }
+    }
+    return 0;
+}
